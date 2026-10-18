@@ -146,7 +146,7 @@ def get_latest_sensors():
 # API mới: Lấy lịch sử Cảm biến (DataSensors tab)
 @app.route('/api/sensors/history', methods=['GET'])
 def get_sensor_history():
-    data = SensorData.query.order_by(SensorData.data_id.desc()).limit(50).all()
+    data = SensorData.query.order_by(SensorData.data_id.desc()).all()
     result = []
     for item in data:
         sensor = Sensor.query.get(item.sensor_id)
@@ -169,7 +169,7 @@ def get_device_status():
 
 @app.route('/api/history', methods=['GET'])
 def get_action_history():
-    history = ActionHistory.query.order_by(ActionHistory.action_id.desc()).limit(50).all()
+    history = ActionHistory.query.order_by(ActionHistory.action_id.desc()).all()
     result = []
     for item in history:
         device = Device.query.get(item.device_id)
