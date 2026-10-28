@@ -3,6 +3,7 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import paho.mqtt.client as mqtt
 import json
+from threading import Timer
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -114,6 +115,21 @@ mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
 mqtt_client.loop_start()
 
 
+
+def fail_action_after_timeout(action_id):
+    with app.app_context():
+        action = db.session.get(ActionHistory, action_id)
+        if action and action.result == "PENDING":
+            action.result = "FAILED"
+            db.session.commit()
+
+
+def schedule_action_timeout(action_id):
+    timer = Timer(4.0, fail_action_after_timeout, args=(action_id,))
+    timer.daemon = True
+    timer.start()
+
+
 # ==========================================
 # REST API - CÁC HÀM XỬ LÝ DỮ LIỆU
 # ==========================================
@@ -143,7 +159,7 @@ def get_latest_sensors():
         "light": int(light.value) if light else 0
     }), 200
 
-# API mới: Lấy lịch sử Cảm biến (DataSensors tab)
+
 @app.route('/api/sensors/history', methods=['GET'])
 def get_sensor_history():
     data = SensorData.query.order_by(SensorData.data_id.desc()).all()
@@ -195,7 +211,8 @@ def control_device(device_code):
     db.session.commit()
 
     mqtt_client.publish(TOPIC_CONTROL, json.dumps({"device_id": device_code, "action": action}))
-    return jsonify({"status": "success"}), 200
+    schedule_action_timeout(new_action.action_id)
+    return jsonify({"status": "success", "action_id": new_action.action_id}), 200
 
 
 @app.route('/api/devices/bulk_control', methods=['POST'])
@@ -209,6 +226,7 @@ def bulk_control_devices():
             return jsonify({"error": "No commands provided"}), 400
         
         valid_commands_to_send = []
+        pending_actions = []
 
         for cmd in commands:
             device_code = cmd.get('device_code')
@@ -219,6 +237,7 @@ def bulk_control_devices():
                 # Ghi lịch sử PENDING vào cơ sở dữ liệu
                 new_action = ActionHistory(user_id=user_id, device_id=device.device_id, action=action, result="PENDING")
                 db.session.add(new_action)
+                pending_actions.append(new_action)
                 # Đưa vào mảng dữ liệu để gửi MQTT
                 valid_commands_to_send.append({"device_id": device_code, "action": action})
                 
@@ -228,22 +247,11 @@ def bulk_control_devices():
             mqtt_client.publish(TOPIC_CONTROL, command_payload)
 
         db.session.commit()
+        for action in pending_actions:
+            schedule_action_timeout(action.action_id)
         return jsonify({"status": "success", "message": "Bulk commands sent"}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
-
-
-
-# API mới: Đánh dấu lệnh là FAILED nếu sau 4 giây Timeout
-@app.route('/api/devices/<device_code>/fail', methods=['POST'])
-def mark_action_fail(device_code):
-    device = Device.query.filter_by(device_code=device_code).first()
-    if device:
-        pending_action = ActionHistory.query.filter_by(device_id=device.device_id, result="PENDING").order_by(ActionHistory.action_id.desc()).first()
-        if pending_action:
-            pending_action.result = "FAILED"
-            db.session.commit()
-    return jsonify({"status": "updated"}), 200
 
 with app.app_context():
     db.create_all() 
